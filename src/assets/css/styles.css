@@ -1,0 +1,10 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+@import "tailwindcss";
+/* Defining custom color properties (CSS Variables) */
+:root {
+    --cyber-dark: #0c0c14;
+}
+/* Custom utility classes for colors */
+.bg-cyber-dark {
+    background-color: var(--cyber-dark);
+}
