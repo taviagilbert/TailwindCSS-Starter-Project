@@ -4,94 +4,98 @@ const { globSync } = require("glob");
 const fs = require("fs-extra");
 const path = require("path");
 
-// --- Configuration ---
-const TASKS = [
-  {
-    inputDir: "src/assets/images",
-    outputDir: "dist/assets/images",
-  },
-  {
-    inputDir: "demo/assets/images",
-    outputDir: "dist/demo/assets/images",
-  },
-];
-
-// Define image quality settings
-const SETTINGS = {
+// Configuration
+const config = {
+  inputDir: "src/assets/images",
+  outputDirs: ["dist/assets/images", "demo/assets/images"],
   jpeg: { quality: 80, progressive: true },
   png: { quality: 80, compressionLevel: 9 },
   webp: { quality: 75 },
   avif: { quality: 65 },
 };
 
-/**
- * Copies files that don't need optimization (e.g., SVG, GIF).
- * @param {string[]} filePaths - Array of file paths to copy.
- * @param {string} inputDir - The base input directory for calculating relative paths.
- * @param {string} outputDir - The base output directory.
- * @param {object} stats - The statistics object to update.
- */
-function copyOtherFiles(filePaths, inputDir, outputDir, stats) {
-  for (const inputPath of filePaths) {
+// Create all output directories if they don't exist
+config.outputDirs.forEach((dir) => fs.ensureDirSync(dir));
+
+// Process images based on their formats
+(async () => {
+  console.log("🖼️ Starting image optimization...");
+
+  const allImageFiles = globSync(
+    `${config.inputDir}/**/*.{jpg,jpeg,png,svg,gif,ico}`,
+  );
+
+  // Track counts for reporting
+  const stats = {
+    processed: 0,
+    copied: 0,
+    errors: 0,
+  };
+
+  const specialFilePatterns = ["android-chrome", "apple-touch-icon", "favicon"];
+
+  // Copy assets to all output directories
+  const copyAsset = (filePath) => {
     try {
-      const relativePath = path.relative(inputDir, inputPath);
-      const outputPath = path.join(outputDir, relativePath);
-
-      fs.ensureDirSync(path.dirname(outputPath));
-      fs.copyFileSync(inputPath, outputPath);
-
+      const relativePath = path.relative(config.inputDir, filePath);
+      for (const outputDir of config.outputDirs) {
+        const outputPath = path.join(outputDir, relativePath);
+        fs.ensureDirSync(path.dirname(outputPath));
+        fs.copyFileSync(filePath, outputPath);
+      }
       stats.copied++;
       console.log(`📋 Copied: ${relativePath}`);
     } catch (error) {
       stats.errors++;
-      console.error(`❌ Error copying ${inputPath}:`, error.message);
+      console.error(`❌ Error copying ${filePath}:`, error.message);
     }
-  }
-}
+  };
 
-/**
- * Processes and optimizes a batch of raster images (JPG, PNG).
- * @param {string[]} imagePaths - Array of image paths to process.
- * @param {string} inputDir - The base input directory for calculating relative paths.
- * @param {string} outputDir - The base output directory.
- * @param {object} stats - The statistics object to update.
- */
-async function optimizeRasterImages(imagePaths, inputDir, outputDir, stats) {
-  for (const inputPath of imagePaths) {
+  for (const inputPath of allImageFiles) {
+    const fileName = path.basename(inputPath);
+    const isSpecialFile =
+      specialFilePatterns.some((pattern) => fileName.startsWith(pattern)) ||
+      fileName.endsWith(".ico") ||
+      fileName.endsWith(".svg") ||
+      fileName.endsWith(".gif");
+
+    if (isSpecialFile) {
+      copyAsset(inputPath);
+      continue;
+    }
+
     try {
-      // Determine output paths
-      const relativePath = path.relative(inputDir, inputPath);
-      const { name, dir } = path.parse(relativePath);
-      const outputSubDir = path.join(outputDir, dir);
-
-      // Ensure the destination directory exists
-      fs.ensureDirSync(outputSubDir);
-
+      const relativePath = path.relative(config.inputDir, inputPath);
       const image = sharp(inputPath);
-      const extension = path.extname(inputPath).toLowerCase();
+      const metadata = await image.metadata();
 
-      // 1. Optimize and save the original file format
-      if (extension === ".jpeg" || extension === ".jpg") {
-        await image
-          .clone()
-          .jpeg(SETTINGS.jpeg)
-          .toFile(path.join(outputSubDir, `${name}${extension}`));
-      } else if (extension === ".png") {
-        await image
-          .clone()
-          .png(SETTINGS.png)
-          .toFile(path.join(outputSubDir, `${name}${extension}`));
+      // Loop through each output directory for processing
+      for (const outputDir of config.outputDirs) {
+        const baseOutputPath = path.join(outputDir, relativePath);
+        fs.ensureDirSync(path.dirname(baseOutputPath));
+
+        if (metadata.format === "jpeg" || inputPath.match(/\.(jpg|jpeg)$/i)) {
+          await image.clone().jpeg(config.jpeg).toFile(baseOutputPath);
+          await image
+            .clone()
+            .webp(config.webp)
+            .toFile(baseOutputPath.replace(/\.(jpg|jpeg)$/i, ".webp"));
+          await image
+            .clone()
+            .avif(config.avif)
+            .toFile(baseOutputPath.replace(/\.(jpg|jpeg)$/i, ".avif"));
+        } else if (metadata.format === "png" || inputPath.match(/\.png$/i)) {
+          await image.clone().png(config.png).toFile(baseOutputPath);
+          await image
+            .clone()
+            .webp(config.webp)
+            .toFile(baseOutputPath.replace(/\.png$/i, ".webp"));
+          await image
+            .clone()
+            .avif(config.avif)
+            .toFile(baseOutputPath.replace(/\.png$/i, ".avif"));
+        }
       }
-
-      // 2. Create and save modern formats (WebP and AVIF)
-      await image
-        .clone()
-        .webp(SETTINGS.webp)
-        .toFile(path.join(outputSubDir, `${name}.webp`));
-      await image
-        .clone()
-        .avif(SETTINGS.avif)
-        .toFile(path.join(outputSubDir, `${name}.avif`));
 
       stats.processed++;
       console.log(`✅ Optimized: ${relativePath}`);
@@ -100,43 +104,12 @@ async function optimizeRasterImages(imagePaths, inputDir, outputDir, stats) {
       console.error(`❌ Error processing ${inputPath}:`, error.message);
     }
   }
-}
 
-// --- Main Execution ---
-(async () => {
-  console.log("🖼️ Starting image optimization...");
-
-  const totalStats = { processed: 0, copied: 0, errors: 0 };
-
-  // Loop through each task defined in the configuration
-  for (const task of TASKS) {
-    const { inputDir, outputDir } = task;
-
-    // Check if the source directory exists before proceeding
-    if (!fs.existsSync(inputDir)) {
-      console.warn(`⚠️  Skipping: Input directory not found at '${inputDir}'`);
-      continue;
-    }
-
-    console.log(`\n▶️  Processing task: '${inputDir}' -> '${outputDir}'`);
-    fs.ensureDirSync(outputDir);
-
-    // Find all images and other files
-    const rasterImages = globSync(`${inputDir}/**/*.{jpg,jpeg,png}`);
-    const otherFiles = globSync(`${inputDir}/**/*.{svg,gif,ico}`);
-
-    // Run the optimization and copying processes
-    await optimizeRasterImages(rasterImages, inputDir, outputDir, totalStats);
-    copyOtherFiles(otherFiles, inputDir, outputDir, totalStats);
-  }
-
-  // Final report summarizing all tasks
+  // Final report
   console.log("\n✨ Image optimization complete:");
-  console.log(
-    `   - ${totalStats.processed} images optimized (to JPEG/PNG, WebP, AVIF)`,
-  );
-  console.log(`   - ${totalStats.copied} files copied (SVG, GIF, ICO)`);
-  if (totalStats.errors > 0) {
-    console.log(`   - ${totalStats.errors} errors encountered`);
+  console.log(`  - ${stats.processed} images optimized`);
+  console.log(`  - ${stats.copied} files copied`);
+  if (stats.errors > 0) {
+    console.log(`  - ${stats.errors} errors encountered`);
   }
 })();
